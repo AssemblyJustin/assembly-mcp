@@ -1,0 +1,40 @@
+# --- Internal Assembly reference (never publish: LAN IPs, SSH, Tailscale, Cloudflare token setup) ---
+claude.md.txt
+CLAUDE.md
+docs/internal/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+*.egg
+
+# --- Virtual envs / uv ---
+.venv/
+venv/
+env/
+.uv/
+
+# --- Test / build artefacts ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+*.log
+
+# --- Scratch conversion outputs ---
+/scratch/
+*.out.pdf
+*.out.md
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,39 @@
+[project]
+name = "assembly-mcp"
+version = "0.1.0"
+description = "Assembly MCP server — Markdown ↔ PDF conversion tools (convert_mdtopdf, convert_pdftomd)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Assembly", email = "justin@assembly.nz" }]
+keywords = ["mcp", "model-context-protocol", "pdf", "markdown", "weasyprint", "pymupdf", "conversion"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "mcp>=1.2.0",
+    "pymupdf>=1.24.0",
+    "markdown>=3.6",
+    "weasyprint>=62.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/AssemblyJustin/assembly-mcp"
+Repository = "https://github.com/AssemblyJustin/assembly-mcp"
+
+[project.scripts]
+assembly-mcp = "assembly_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/assembly_mcp"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]

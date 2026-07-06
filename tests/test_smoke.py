@@ -76,3 +76,8 @@ def test_markdown_to_pdf_and_back(tmp_path: Path) -> None:
     md = pdf_to_markdown(pdf)
     assert "Assembly MCP Test" in md
     assert "Features" in md
+    # List content survives and no stray bullet-only lines leak through.
+    assert "PDF to Markdown" in md
+    bullets = set("•●◦▪▫‣∙·")
+    stray = [ln for ln in md.splitlines() if ln.strip() and ln.strip() in bullets]
+    assert not stray, f"stray bullet glyphs: {stray}"

@@ -46,6 +46,13 @@ _WATERMARK_PATTERNS = [
     )
 ]
 
+# Bullet glyphs PDFs use for unordered lists (WeasyPrint/Word/InDesign etc.).
+_BULLET_CHARS = "•●◦▪▫‣∙·"
+# A block that is *only* a bullet marker (stray glyph, no content) → drop it.
+_BULLET_ONLY_RE = re.compile(rf"^[\s{re.escape(_BULLET_CHARS)}]+$")
+# A block whose text starts with a bullet marker → turn into a Markdown list item.
+_LEADING_BULLET_RE = re.compile(rf"^[{re.escape(_BULLET_CHARS)}]\s+")
+
 
 def _norm_key(text: str) -> str:
     """Normalise a line for furniture matching (digits → #, lowercased)."""
@@ -186,6 +193,14 @@ def _block_to_markdown(
         return None
     if strip_watermarks and _is_watermark(text):
         return None
+
+    # List bullets: drop stray bullet-only blocks; convert leading bullets to
+    # Markdown list items. (PDFs often place the bullet glyph in its own run.)
+    if _BULLET_ONLY_RE.match(text):
+        return None
+    bullet = _LEADING_BULLET_RE.match(text)
+    if bullet:
+        return f"- {text[bullet.end():].strip()}"
 
     level = heading_map.get(max_size)
     if level is None and total_chars and bold_chars / total_chars > 0.9 and len(text) < 90:

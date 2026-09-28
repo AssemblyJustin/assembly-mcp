@@ -6,13 +6,15 @@ tools:
 
 | Tool | Direction | Engine |
 |------|-----------|--------|
-| **`convert_pdftomd`** | PDF → Markdown | [PyMuPDF](https://pymupdf.readthedocs.io) |
+| **`convert_pdftomd`** | PDF → Markdown | assembly-app `pdf2md` CLI (pdf.js) |
 | **`convert_mdtopdf`** | Markdown → PDF | [WeasyPrint](https://weasyprint.org) |
 
-Both are the conversion engines Assembly already standardises on:
-PyMuPDF-first extraction (font-size heading detection, running header/footer
-removal, table extraction, watermark stripping) and WeasyPrint for
-Markdown/HTML → PDF (pure-Python, no TeX toolchain).
+`convert_pdftomd` is a thin wrapper — it shells out to
+`node --experimental-strip-types --no-warnings <assembly-app>/apps/frontend/scripts/pdf2md.ts`,
+the assembly-app pdf2md converter (pdf.js: headings, lists, ruled tables,
+images saved to `<stem>_images/`). Requires **Node ≥ 22** and an assembly-app
+checkout — see `ASSEMBLY_APP_DIR` below. `convert_mdtopdf` renders
+Markdown/HTML → PDF with WeasyPrint (pure-Python, no TeX toolchain).
 
 ---
 
@@ -20,6 +22,10 @@ Markdown/HTML → PDF (pure-Python, no TeX toolchain).
 
 - **Python ≥ 3.11**
 - **[uv](https://docs.astral.sh/uv/)** (recommended) or `pip`
+- **Node ≥ 22** and an **assembly-app checkout** — required for `convert_pdftomd`,
+  which shells out to that repo's `apps/frontend/scripts/pdf2md.ts`. By default
+  it looks for a sibling `assembly-app` checkout next to this repo; point it
+  elsewhere with the `ASSEMBLY_APP_DIR` environment variable.
 - **WeasyPrint native libraries** — only needed for `convert_mdtopdf`
   (`convert_pdftomd` works without them):
   - **Linux (Debian/Ubuntu):** `apt install libpango-1.0-0 libpangoft2-1.0-0 libgdk-pixbuf-2.0-0 libffi-dev`
@@ -90,22 +96,23 @@ Restart Claude Desktop. The two tools appear under the 🔌 tools menu.
 
 ### `convert_pdftomd`
 
-Convert a PDF file to Markdown.
+Convert a PDF file to Markdown. PDF→Markdown runs the assembly-app pdf2md
+converter (pdf.js) — headings, lists, ruled tables, images (saved to
+`<stem>_images/`). Requires node ≥ 22 and the assembly-app checkout
+(`ASSEMBLY_APP_DIR`).
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `pdf_path` | string | — | Path to the source `.pdf`. |
 | `output_path` | string | `null` | Optional path to also write the `.md`. |
-| `strip_watermarks` | bool | `true` | Remove Standards-NZ / IHS style watermark lines and light-grey overlay text. |
-| `front_matter` | bool | `true` | Prepend YAML front-matter linking back to the source PDF. |
+| `strip_watermarks` | bool | `true` | Kept for compatibility; always on in the unified converter. |
+| `front_matter` | bool | `true` | Kept for compatibility; always on in the unified converter. |
 
-Returns the Markdown text. Extraction features: font-size heading map
-(largest sizes → `#`..`####`), running header/footer removal, `find_tables()`
-→ pipe tables, watermark/licence-line stripping.
+Returns the Markdown text (prefixed with a `<!-- pdf2md: … -->` summary
+comment giving page/table/image counts and the output path).
 
-> This is a code-only extraction (Tiers 1–2 of Assembly's pipeline). It does
-> not run the vision-based Tier 3–4 verification, so treat the output as a
-> high-quality first pass, not a certified copy.
+> This is a code-only extraction. It does not run vision-based verification,
+> so treat the output as a high-quality first pass, not a certified copy.
 
 ### `convert_mdtopdf`
 
@@ -128,18 +135,18 @@ blocks, page numbers) and verifies the PDF magic bytes before writing.
 ## Develop
 
 ```bash
-uv run pytest            # smoke tests (MD→PDF test auto-skips without GTK)
+uv run pytest            # smoke tests (PDF→MD skips without node/assembly-app; MD→PDF skips without GTK)
 ```
 
 Project layout:
 
 ```
 src/assembly_mcp/
-  server.py       FastMCP server — registers both tools (stdio)
-  pdf_to_md.py    PyMuPDF extraction pipeline
+  server.py       FastMCP server — registers both tools (stdio); convert_pdftomd
+                  shells out to the assembly-app pdf2md CLI (_app_dir())
   md_to_pdf.py    python-markdown → WeasyPrint rendering
 .claude/commands/ /convert-pdftomd and /convert-mdtopdf slash commands
-tests/            round-trip smoke test
+tests/            smoke tests
 ```
 
 ## License

@@ -1,7 +1,7 @@
 """Assembly MCP server.
 
 Exposes two tools over stdio:
-  * convert_pdftomd — PDF → Markdown (PyMuPDF)
+  * convert_pdftomd — PDF → Markdown (wraps the assembly-app pdf2md CLI, pdf.js)
   * convert_mdtopdf — Markdown → PDF (WeasyPrint)
 
 Run with:  assembly-mcp        (installed script)
@@ -10,14 +10,24 @@ Run with:  assembly-mcp        (installed script)
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from .md_to_pdf import markdown_to_pdf
-from .pdf_to_md import pdf_to_markdown
 
 mcp = FastMCP("assembly")
+
+
+def _app_dir() -> Path:
+    """The assembly-app checkout whose pdf2md CLI is THE converter (env ASSEMBLY_APP_DIR, else the
+    sibling `assembly-app` next to this repo)."""
+    env = os.environ.get("ASSEMBLY_APP_DIR")
+    return Path(env) if env else Path(__file__).resolve().parents[3] / "assembly-app"
 
 
 @mcp.tool()
@@ -29,31 +39,35 @@ def convert_pdftomd(
 ) -> str:
     """Convert a PDF file to Markdown.
 
-    Uses PyMuPDF with font-size heading detection, running header/footer
-    removal, table extraction, and optional watermark stripping — the Assembly
-    PDF→MD pipeline. Returns the Markdown text; when `output_path` is given it
-    also writes a `.md` file there.
+    Runs the assembly-app pdf2md converter (pdf.js: headings, lists, ruled
+    tables, images saved beside the .md in `<stem>_images/`). `strip_watermarks`
+    / `front_matter` are always on.
 
     Args:
         pdf_path: Path to the source `.pdf` file.
         output_path: Optional path to also write the Markdown to (`.md`).
-        strip_watermarks: Remove Standards-NZ / IHS style watermark lines and
-            light-grey overlay text.
-        front_matter: Prepend YAML front-matter linking back to the source PDF.
+        strip_watermarks: Kept for compatibility; always on in the unified converter.
+        front_matter: Kept for compatibility; always on in the unified converter.
 
     Returns:
-        The converted Markdown as a string.
+        The converted Markdown as a string, prefixed with a summary comment.
     """
-    markdown = pdf_to_markdown(
-        pdf_path,
-        strip_watermarks=strip_watermarks,
-        write_frontmatter=front_matter,
+    script = _app_dir() / "apps" / "frontend" / "scripts" / "pdf2md.ts"
+    if not script.exists():
+        raise FileNotFoundError(f"pdf2md CLI not found at {script} — set ASSEMBLY_APP_DIR to the assembly-app checkout")
+    out = Path(output_path) if output_path else Path(tempfile.mkdtemp(prefix="pdf2md-")) / (Path(pdf_path).stem + ".md")
+    proc = subprocess.run(
+        ["node", "--experimental-strip-types", "--no-warnings", str(script), str(Path(pdf_path).resolve()), str(out.resolve())],
+        cwd=script.parents[1], capture_output=True, text=True, timeout=600,
     )
-    if output_path:
-        out = Path(output_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(markdown, encoding="utf-8")
-    return markdown
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"pdf2md exited {proc.returncode}")
+    summary = json.loads(proc.stdout.strip().splitlines()[-1])
+    markdown = out.read_text(encoding="utf-8")
+    return (
+        f"<!-- pdf2md: {summary['pages']} pages, {summary['tables']} tables, {summary['images']} images; "
+        f"written to {summary['output']} -->\n" + markdown
+    )
 
 
 @mcp.tool()

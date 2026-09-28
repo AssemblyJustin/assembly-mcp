@@ -34,10 +34,20 @@ A short paragraph with **bold** and *italic* text.
 """
 
 APP = _app_dir()
+NODE = shutil.which("node")
 needs_app = pytest.mark.skipif(
-    not (APP / "apps/frontend/scripts/pdf2md.ts").exists() or shutil.which("node") is None,
+    not (APP / "apps/frontend/scripts/pdf2md.ts").exists() or NODE is None,
     reason="assembly-app checkout / node not available",
 )
+needs_node = pytest.mark.skipif(NODE is None, reason="node not available")
+
+
+def _stub_app(tmp_path: Path, script_body: str) -> Path:
+    """A fake assembly-app checkout with a stand-in `pdf2md.ts` at the CLI's contract path."""
+    script = tmp_path / "apps" / "frontend" / "scripts" / "pdf2md.ts"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(script_body, encoding="utf-8")
+    return tmp_path
 
 
 def _weasyprint_available() -> bool:
@@ -69,6 +79,45 @@ _MINIMAL_PDF = (
     b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
     b"trailer<</Root 1 0 R>>\n%%EOF\n"
 )
+
+_STUB_PDF = b"%PDF-1.4\n%%EOF\n"
+
+
+@needs_node
+def test_convert_pdftomd_raises_runtime_error_with_stderr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-zero exit from the CLI surfaces its stderr in the RuntimeError."""
+    app_dir = _stub_app(tmp_path, "process.stderr.write('pdf2md: boom\\n');\nprocess.exit(1);\n")
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(app_dir))
+    pdf = tmp_path / "in.pdf"
+    pdf.write_bytes(_STUB_PDF)
+    with pytest.raises(RuntimeError, match="boom"):
+        convert_pdftomd(str(pdf), str(tmp_path / "out.md"))
+
+
+def test_convert_pdftomd_missing_script_raises_filenotfound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No `pdf2md.ts` at the contract path -> a clear FileNotFoundError naming ASSEMBLY_APP_DIR."""
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(tmp_path))  # empty dir: no apps/frontend/scripts/pdf2md.ts
+    pdf = tmp_path / "in.pdf"
+    pdf.write_bytes(_STUB_PDF)
+    with pytest.raises(FileNotFoundError, match="ASSEMBLY_APP_DIR"):
+        convert_pdftomd(str(pdf), str(tmp_path / "out.md"))
+
+
+@needs_node
+def test_convert_pdftomd_handles_non_ascii_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-ASCII path segment in the CLI's JSON summary line round-trips cleanly (utf-8 decode)."""
+    script_body = (
+        "const fs = require('fs');\n"
+        "fs.writeFileSync(process.argv[3], '# Hello\\n');\n"
+        "console.log(JSON.stringify({output: 'C:/\\u014ct\\u0101kou/out.md', pages: 1, tables: 0, images: 0}));\n"
+    )
+    app_dir = _stub_app(tmp_path, script_body)
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(app_dir))
+    pdf = tmp_path / "in.pdf"
+    pdf.write_bytes(_STUB_PDF)
+    md = convert_pdftomd(str(pdf), str(tmp_path / "out.md"))
+    assert "Ōtākou" in md
+    assert "# Hello" in md
 
 
 @pytest.mark.skipif(

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -41,11 +42,15 @@ def convert_pdftomd(
 
     Runs the assembly-app pdf2md converter (pdf.js: headings, lists, ruled
     tables, images saved beside the .md in `<stem>_images/`). `strip_watermarks`
-    / `front_matter` are always on.
+    / `front_matter` are always on. When `output_path` is omitted, the Markdown
+    and any extracted images are written to a new temp folder; the returned
+    summary line names it — pass `output_path` to control the location.
 
     Args:
         pdf_path: Path to the source `.pdf` file.
-        output_path: Optional path to also write the Markdown to (`.md`).
+        output_path: Optional path to also write the Markdown to (`.md`). If
+            omitted, a fresh temp directory is used (named in the returned
+            summary line).
         strip_watermarks: Kept for compatibility; always on in the unified converter.
         front_matter: Kept for compatibility; always on in the unified converter.
 
@@ -55,10 +60,14 @@ def convert_pdftomd(
     script = _app_dir() / "apps" / "frontend" / "scripts" / "pdf2md.ts"
     if not script.exists():
         raise FileNotFoundError(f"pdf2md CLI not found at {script} — set ASSEMBLY_APP_DIR to the assembly-app checkout")
+    node = shutil.which("node")
+    if node is None:
+        raise FileNotFoundError("node (>=22) not found on PATH — required for the pdf2md converter")
     out = Path(output_path) if output_path else Path(tempfile.mkdtemp(prefix="pdf2md-")) / (Path(pdf_path).stem + ".md")
     proc = subprocess.run(
-        ["node", "--experimental-strip-types", "--no-warnings", str(script), str(Path(pdf_path).resolve()), str(out.resolve())],
+        [node, "--experimental-strip-types", "--no-warnings", str(script), str(Path(pdf_path).resolve()), str(out.resolve())],
         cwd=script.parents[1], capture_output=True, text=True, timeout=600,
+        encoding="utf-8", errors="replace",
     )
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip() or f"pdf2md exited {proc.returncode}")

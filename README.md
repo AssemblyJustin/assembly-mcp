@@ -1,13 +1,15 @@
 # Assembly MCP
 
 A small [Model Context Protocol](https://modelcontextprotocol.io) server that
-gives any MCP client (Claude Code, Claude Desktop, …) two document-conversion
+gives any MCP client (Claude Code, Claude Desktop, …) document-conversion and assembly-app upload
 tools:
 
 | Tool | Direction | Engine |
 |------|-----------|--------|
 | **`convert_pdftomd`** | PDF → Markdown | assembly-app `pdf2md` CLI (pdf.js) |
 | **`convert_mdtopdf`** | Markdown → PDF | [WeasyPrint](https://weasyprint.org) |
+| **`upload_issue` / `issue_draft`** | files → draft issue → issued | assembly-app `upload-issues` CLI |
+| **`upload_renders`** | images → Renders tab | assembly-app `upload-renders` CLI |
 
 `convert_pdftomd` is a thin wrapper — it shells out to
 `node --experimental-strip-types --no-warnings <assembly-app>/apps/frontend/scripts/pdf2md.ts`,
@@ -59,16 +61,21 @@ uv run assembly-mcp
 From anywhere, register the server (adjust the path to your clone):
 
 ```bash
-claude mcp add assembly -- uv --directory /ABSOLUTE/PATH/TO/assembly-mcp run assembly-mcp
+claude mcp add assembly -- uv --directory /ABSOLUTE/PATH/TO/assembly-mcp run --no-sync assembly-mcp
 ```
 
-Then the tools `convert_pdftomd` and `convert_mdtopdf` are available in your
-session. This repo also ships matching slash commands — run Claude Code from
-inside the repo (or copy `.claude/commands/*` into your project) to use:
+(`--no-sync`: on Windows, a second Claude session's `uv run` otherwise tries to reinstall the
+`assembly-mcp.exe` the first session is running, fails with "file in use", and the server never
+connects. Run `uv sync` yourself after pulling.)
+
+Then the tools are available in your session. This repo also ships matching slash commands — run
+Claude Code from inside the repo (or copy `.claude/commands/*` into your project) to use:
 
 ```
 /convert-pdftomd  report.pdf  report.md
 /convert-mdtopdf  notes.md     notes.pdf
+/upload issues
+/upload renders
 ```
 
 ## Add to Claude Desktop
@@ -82,13 +89,13 @@ Edit `claude_desktop_config.json`
   "mcpServers": {
     "assembly": {
       "command": "uv",
-      "args": ["--directory", "C:\\ABSOLUTE\\PATH\\TO\\assembly-mcp", "run", "assembly-mcp"]
+      "args": ["--directory", "C:\\ABSOLUTE\\PATH\\TO\\assembly-mcp", "run", "--no-sync", "assembly-mcp"]
     }
   }
 }
 ```
 
-Restart Claude Desktop. The two tools appear under the 🔌 tools menu.
+Restart Claude Desktop. The tools appear under the 🔌 tools menu.
 
 ---
 
@@ -130,6 +137,31 @@ Convert Markdown to a PDF file. Provide **either** `md_path` **or**
 Renders Markdown → HTML → PDF with a clean A4 print stylesheet (tables, code
 blocks, page numbers) and verifies the PDF magic bytes before writing.
 
+### `upload_issue` / `issue_draft` / `upload_renders`
+
+Upload to an assembly-app project **as the person doing it**. These are thin wrappers over the
+assembly-app CLIs `apps/frontend/scripts/upload-issues.ts` and `upload-renders.ts` (node ≥ 22 +
+an assembly-app checkout, `ASSEMBLY_APP_DIR`). Each signs in as `uploader_email`, so the database's own
+permission rules apply: people can only upload to projects they're on, and viewers and clients can't upload.
+The slash command `/upload issues` / `/upload renders` (`.claude/commands/upload.md`) drives them.
+
+| Tool | Does |
+|------|------|
+| `upload_issue(uploader_email, project, issue_type, issue_name, files, env="prod", dry_run=False)` | Files → a **draft** issue (Transmittal) on the project's Documents tab. Returns `collectionId` + `recipientChoices`. Never issues. |
+| `issue_draft(uploader_email, collection_id, issue_type, recipients=[], cover_notes=None, env="prod")` | Issues that draft (allocates the issue number, which can't be undone). `recipients` = people and/or organisation names. |
+| `upload_renders(uploader_email, project, files, title=None, env="prod", dry_run=False)` | Images → the project's Renders tab. Skips non-images and images already there. |
+
+`project` is the project number (e.g. `2610`) or UUID. `issue_type` is the issue purpose: For
+Information / Review / Approval / Construction / Tender / Coordination / Record (or an org's own).
+
+**Setup (once per machine):**
+- Password: **never a tool argument.** Set `ASSEMBLY_PASSWORD`, or create
+  `~/.assembly/credentials.json` as `{"you@assembly.nz": "<your app password>"}`. The second form
+  supports several people on one machine.
+- Prod: set `ASSEMBLY_SUPABASE_ANON_KEY` to the prod app's public anon key (URL defaults to
+  `https://newapi-next.assembly.nz`; override with `ASSEMBLY_SUPABASE_URL`).
+- Dev (`env="dev"`): read from the checkout's `apps/frontend/.env.local`.
+
 ---
 
 ## Develop
@@ -142,10 +174,10 @@ Project layout:
 
 ```
 src/assembly_mcp/
-  server.py       FastMCP server — registers both tools (stdio); convert_pdftomd
+  server.py       FastMCP server — registers the tools (stdio); convert_pdftomd
                   shells out to the assembly-app pdf2md CLI (_app_dir())
   md_to_pdf.py    python-markdown → WeasyPrint rendering
-.claude/commands/ /convert-pdftomd and /convert-mdtopdf slash commands
+.claude/commands/ /convert-pdftomd, /convert-mdtopdf and /upload slash commands
 tests/            smoke tests
 ```
 

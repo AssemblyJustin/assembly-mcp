@@ -1,10 +1,13 @@
 ---
-description: Convert a PDF to Markdown using the Assembly MCP (PyMuPDF pipeline)
+description: Convert a PDF to Markdown using the Assembly MCP (assembly-app pdf2md CLI, pdf.js)
 argument-hint: <input.pdf> [output.md]
 ---
 
 Convert a PDF file to Markdown by calling the Assembly MCP tool
-`convert_pdftomd` (from the `assembly` MCP server).
+`convert_pdftomd` (from the `assembly` MCP server). PDF→Markdown runs the
+assembly-app pdf2md converter (pdf.js) — headings, lists, ruled tables, images
+(saved to `<stem>_images/`). Requires node ≥ 22 and the assembly-app checkout
+(`ASSEMBLY_APP_DIR`).
 
 Arguments: `$ARGUMENTS`
 - First token = path to the source `.pdf`.
@@ -17,7 +20,7 @@ Steps:
 2. Call `convert_pdftomd` with `pdf_path`, `output_path`, `strip_watermarks=true`,
    `front_matter=true`.
 3. Report where the Markdown was written and summarise anything notable
-   (page count, tables found, watermark lines removed).
+   (page count, tables found, images extracted).
 
 If the `assembly` MCP server is not connected, tell the user to add it — see the
 repo README `Add to Claude Code` section — then stop.

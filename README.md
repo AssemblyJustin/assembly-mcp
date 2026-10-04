@@ -147,17 +147,22 @@ The slash command `/upload issues` / `/upload renders` (`.claude/commands/upload
 
 | Tool | Does |
 |------|------|
-| `upload_issue(uploader_email, project, issue_type, issue_name, files, env="prod", dry_run=False)` | Files → a **draft** issue (Transmittal) on the project's Documents tab. Returns `collectionId` + `recipientChoices`. Never issues. |
-| `issue_draft(uploader_email, collection_id, issue_type, recipients=[], cover_notes=None, env="prod")` | Issues that draft (allocates the issue number, which can't be undone). `recipients` = people and/or organisation names. |
-| `upload_renders(uploader_email, project, files, title=None, env="prod", dry_run=False)` | Images → the project's Renders tab. Skips non-images and images already there. |
+| `upload_issue(project, issue_type, issue_name, files, env="prod", dry_run=False, uploader_email=None)` | Files → a **draft** issue (Transmittal) on the project's Documents tab. Returns `collectionId` + `recipientChoices`. Never issues. |
+| `issue_draft(collection_id, issue_type, recipients=[], cover_notes=None, env="prod", uploader_email=None)` | Issues that draft (allocates the issue number, which can't be undone). `recipients` = people and/or organisation names. |
+| `upload_renders(project, files, title=None, env="prod", dry_run=False, uploader_email=None)` | Images → the project's Renders tab. Skips non-images and images already there. |
+| `save_login(email, password, env="prod", make_default=True)` | Checks the login by signing in, then saves it to `~/.assembly/credentials.json` and (by default) makes them the default uploader. `/upload` calls it the first time only. |
+| `saved_login()` | Who `/upload` acts as on this machine (`default` + saved `people`). Never returns passwords. |
+
+`uploader_email` is optional everywhere: omitted, the tools act as the saved default.
 
 `project` is the project number (e.g. `2610`) or UUID. `issue_type` is the issue purpose: For
 Information / Review / Approval / Construction / Tender / Coordination / Record (or an org's own).
 
 **Setup (once per machine):**
-- Password: **never a tool argument.** Set `ASSEMBLY_PASSWORD`, or create
-  `~/.assembly/credentials.json` as `{"you@assembly.nz": "<your app password>"}`. The second form
-  supports several people on one machine.
+- Login: nothing to do by hand. The first `/upload` asks for the person's app email + password
+  once and `save_login` stores them in `~/.assembly/credentials.json`
+  (`{"_default": "<email>", "<email>": "<password>"}`, several people allowed). After that it never
+  asks again. `ASSEMBLY_PASSWORD` still works for scripted use.
 - Prod: set `ASSEMBLY_SUPABASE_ANON_KEY` to the prod app's public anon key (URL defaults to
   `https://newapi-next.assembly.nz`; override with `ASSEMBLY_SUPABASE_URL`).
 - Dev (`env="dev"`): read from the checkout's `apps/frontend/.env.local`.

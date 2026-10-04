@@ -131,7 +131,7 @@ def convert_mdtopdf(
     )
 
 
-def _run_upload_cli(script_name: str, args: list[str]) -> dict:
+def _run_upload_cli(script_name: str, args: list[str], child_env: dict[str, str] | None = None) -> dict:
     """Run an assembly-app upload CLI (`apps/frontend/scripts/<script_name>`) and return its
     `RESULT {json}` line. The CLI signs in AS the person (`--as <email>`); its password comes from
     ASSEMBLY_PASSWORD or ~/.assembly/credentials.json — never from a tool argument. Dev config is
@@ -145,7 +145,7 @@ def _run_upload_cli(script_name: str, args: list[str]) -> dict:
         raise FileNotFoundError("node (>=22) not found on PATH — required for the upload CLIs")
     proc = subprocess.run(
         [node, "--env-file-if-exists=.env.local", "--experimental-strip-types", "--no-warnings", str(script), *args],
-        cwd=frontend, capture_output=True, text=True, timeout=1800,
+        cwd=frontend, env=child_env, capture_output=True, text=True, timeout=1800,
         encoding="utf-8", errors="replace",
     )
     result_lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")]
@@ -163,15 +163,158 @@ def _env_arg(env: str) -> list[str]:
     return ["--env", env]
 
 
+# ── Saved login ──────────────────────────────────────────────────────────────────────────────────
+# One file per machine, shared with the CLIs (upload/common.ts reads the same file):
+#   {"_default": "<email>", "<email>": "<password>", ...}
+# `_default` is who /upload acts as when no one else is named — so it asks once, never again.
+
+_DEFAULT_KEY = "_default"
+
+
+def _credentials_path() -> Path:
+    env = os.environ.get("ASSEMBLY_CREDENTIALS_FILE")
+    return Path(env) if env else Path.home() / ".assembly" / "credentials.json"
+
+
+def _read_credentials() -> dict:
+    try:
+        data = json.loads(_credentials_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _saved_password(email: str) -> str | None:
+    want = email.strip().lower()
+    for k, v in _read_credentials().items():
+        if k != _DEFAULT_KEY and k.strip().lower() == want and isinstance(v, str) and v:
+            return v
+    return None
+
+
+def _resolve_uploader(uploader_email: str | None) -> str:
+    """The named person, else the saved default; raises a 'run save_login' error when neither."""
+    if uploader_email and uploader_email.strip():
+        return uploader_email.strip()
+    default = _read_credentials().get(_DEFAULT_KEY)
+    if isinstance(default, str) and default:
+        return default
+    raise RuntimeError("no saved login — ask for the person's app email + password once and call save_login")
+
+
+def _supabase_config(env: str) -> tuple[str, str]:
+    """(url, anon key) the CLIs would use: prod from ASSEMBLY_SUPABASE_* (URL defaults to
+    newapi-next), dev from the checkout's apps/frontend/.env.local."""
+    if env == "prod":
+        url = os.environ.get("ASSEMBLY_SUPABASE_URL", "https://newapi-next.assembly.nz")
+        key = os.environ.get("ASSEMBLY_SUPABASE_ANON_KEY") or os.environ.get("ASSEMBLY_PROD_ANON_KEY")
+        if not key:
+            raise RuntimeError("ASSEMBLY_SUPABASE_ANON_KEY is not set for the assembly MCP server")
+        return url, key
+    vals: dict[str, str] = {}
+    env_file = _app_dir() / "apps" / "frontend" / ".env.local"
+    try:
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, v = line.split("=", 1)
+                vals[k.strip()] = v.strip().strip("\"'")
+    except OSError:
+        pass
+    url, key = vals.get("VITE_SUPABASE_URL"), vals.get("VITE_SUPABASE_ANON_KEY")
+    if not url or not key:
+        raise RuntimeError(f"dev config not found in {env_file}")
+    return url, key
+
+
+def _check_sign_in(email: str, password: str, env: str) -> None:
+    """Sign in once against the app's auth endpoint; raises with the server's message on failure."""
+    import httpx
+
+    url, key = _supabase_config(env)
+    r = httpx.post(
+        f"{url.rstrip('/')}/auth/v1/token?grant_type=password",
+        headers={"apikey": key, "Content-Type": "application/json"},
+        json={"email": email, "password": password},
+        timeout=30,
+    )
+    if r.status_code != 200:
+        try:
+            body = r.json()
+            msg = body.get("error_description") or body.get("msg") or body.get("message") or r.text
+        except ValueError:
+            msg = r.text
+        raise RuntimeError(f"sign-in failed for {email}: {msg}")
+
+
+@mcp.tool()
+def save_login(email: str, password: str, env: str = "prod", make_default: bool = True) -> dict:
+    """Save a person's app login on this machine so /upload never asks again.
+
+    Checks the email + password by signing in first; saves only if that works. By default also makes
+    them the default uploader (who /upload acts as when no one else is named). Never echo the
+    password back to the person.
+
+    Args:
+        email: Their app account email.
+        password: Their app password.
+        env: Which backend to check the login against: "prod" (default) or "dev".
+        make_default: Make this person the default uploader (default true).
+
+    Returns:
+        {ok, email, default, saved_to}
+    """
+    _env_arg(env)
+    email = email.strip()
+    if "@" not in email or not password:
+        raise ValueError("an email and a password are required")
+    _check_sign_in(email, password, env)
+    creds = {k: v for k, v in _read_credentials().items() if k.strip().lower() != email.lower() or k == _DEFAULT_KEY}
+    creds[email] = password
+    if make_default or not creds.get(_DEFAULT_KEY):
+        creds[_DEFAULT_KEY] = email
+    path = _credentials_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(creds, indent=2) + "\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return {"ok": True, "email": email, "default": creds[_DEFAULT_KEY], "saved_to": str(path)}
+
+
+@mcp.tool()
+def saved_login() -> dict:
+    """Who /upload will act as on this machine — call this FIRST. Never returns passwords.
+
+    Returns:
+        {default: "<email>" | null, people: ["<email>", ...]} — default null means nobody is saved
+        yet: ask once for their app email + password and call `save_login`.
+    """
+    creds = _read_credentials()
+    default = creds.get(_DEFAULT_KEY)
+    people = [k for k, v in creds.items() if k != _DEFAULT_KEY and isinstance(v, str) and v]
+    return {"default": default if isinstance(default, str) and default else None, "people": people}
+
+
+def _uploader_env(email: str) -> dict[str, str]:
+    """The child env for a CLI run as `email`: its saved password as ASSEMBLY_PASSWORD, so a stale
+    ASSEMBLY_PASSWORD for someone else can never be used for this person."""
+    child = dict(os.environ)
+    pw = _saved_password(email)
+    if pw:
+        child["ASSEMBLY_PASSWORD"] = pw
+    return child
+
+
 @mcp.tool()
 def upload_issue(
-    uploader_email: str,
     project: str,
     issue_type: str,
     issue_name: str,
     files: list[str],
     env: str = "prod",
     dry_run: bool = False,
+    uploader_email: str | None = None,
 ) -> dict:
     """Upload files to an assembly-app project as a DRAFT issue (a Transmittal on the Documents tab).
 
@@ -180,68 +323,70 @@ def upload_issue(
     first to check the project, issue type and file list without writing anything.
 
     Args:
-        uploader_email: The app account of the person uploading (who they are).
         project: The project's number (e.g. "2610") or UUID.
         issue_type: The issue purpose, e.g. "For Construction", "For Information", "Review".
         issue_name: The issue's name as it should appear on the Documents tab.
         files: File and/or folder paths (folders are walked).
         env: "prod" (app.assembly.nz, default) or "dev" (dev.assembly.nz).
         dry_run: Show the plan only; no writes.
+        uploader_email: Who is uploading — omit to use the saved default (see `saved_login`).
 
     Returns:
-        {ok, project, issueType, name, collectionId, status: "draft", uploaded, failed,
+        {ok, uploader, project, issueType, name, collectionId, status: "draft", uploaded, failed,
         recipientChoices: [{organisation, people}]} — `recipientChoices` is who it can be issued to.
     """
-    args = ["--as", uploader_email, "--project", project, "--type", issue_type, "--name", issue_name]
+    who = _resolve_uploader(uploader_email)
+    args = ["--as", who, "--project", project, "--type", issue_type, "--name", issue_name]
     for f in files:
         args += ["--file", str(Path(f).expanduser().resolve())]
     args += _env_arg(env)
     if dry_run:
         args.append("--dry-run")
-    return _run_upload_cli("upload-issues.ts", args)
+    return _run_upload_cli("upload-issues.ts", args, _uploader_env(who))
 
 
 @mcp.tool()
 def issue_draft(
-    uploader_email: str,
     collection_id: str,
     issue_type: str,
     recipients: list[str] | None = None,
     cover_notes: str | None = None,
     env: str = "prod",
+    uploader_email: str | None = None,
 ) -> dict:
     """Issue a draft created by `upload_issue` — allocates the next issue number. Irreversible:
     only call after the person has confirmed the issue type and recipients.
 
     Args:
-        uploader_email: The same person who created the draft.
         collection_id: `collectionId` returned by `upload_issue`.
         issue_type: The issue purpose (e.g. "For Construction").
         recipients: People ("Jane Smith") and/or organisations ("Smith Engineering" = all its
             members) from the draft's `recipientChoices`. May be empty.
         cover_notes: Optional transmittal cover notes.
         env: "prod" (default) or "dev" — must match the draft's.
+        uploader_email: The person who created the draft — omit to use the saved default.
 
     Returns:
         {ok, collectionId, name, status: "issued", issueNumber, issueType, recipients}
     """
-    args = ["--issue", collection_id, "--as", uploader_email, "--type", issue_type]
+    who = _resolve_uploader(uploader_email)
+    args = ["--issue", collection_id, "--as", who, "--type", issue_type]
     for r in recipients or []:
         args += ["--to", r]
     if cover_notes:
         args += ["--notes", cover_notes]
     args += _env_arg(env)
-    return _run_upload_cli("upload-issues.ts", args)
+    return _run_upload_cli("upload-issues.ts", args, _uploader_env(who))
 
 
 @mcp.tool()
 def upload_renders(
-    uploader_email: str,
     project: str,
     files: list[str],
     title: str | None = None,
     env: str = "prod",
     dry_run: bool = False,
+    uploader_email: str | None = None,
 ) -> dict:
     """Upload render images to an assembly-app project's Renders tab, as the person uploading.
 
@@ -249,17 +394,18 @@ def upload_renders(
     skipped, so re-running is safe.
 
     Args:
-        uploader_email: The app account of the person uploading (who they are).
         project: The project's number (e.g. "2610") or UUID.
         files: Image and/or folder paths (folders are walked).
         title: Name for the render — only when uploading exactly one image (default: file name).
         env: "prod" (app.assembly.nz, default) or "dev" (dev.assembly.nz).
         dry_run: Show the plan only; no writes.
+        uploader_email: Who is uploading — omit to use the saved default (see `saved_login`).
 
     Returns:
-        {ok, project, uploaded | toUpload, alreadyThere, skippedNotImages, failed}
+        {ok, uploader, project, uploaded | toUpload, alreadyThere, skippedNotImages, failed}
     """
-    args = ["--as", uploader_email, "--project", project]
+    who = _resolve_uploader(uploader_email)
+    args = ["--as", who, "--project", project]
     for f in files:
         args += ["--file", str(Path(f).expanduser().resolve())]
     if title:
@@ -267,7 +413,7 @@ def upload_renders(
     args += _env_arg(env)
     if dry_run:
         args.append("--dry-run")
-    return _run_upload_cli("upload-renders.ts", args)
+    return _run_upload_cli("upload-renders.ts", args, _uploader_env(who))
 
 
 def main() -> None:

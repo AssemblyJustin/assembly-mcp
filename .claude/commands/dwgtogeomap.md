@@ -1,6 +1,6 @@
 ---
 description: Put a Revit DWG's linework on an assembly-app project's Site → Revit Maps tab, as the person doing it. First time only, asks for their app email + password and saves them; after that it never asks again. Then asks which project and the DWG, shows a dry run (coordinate system, units, layers, line count, distance to site), and uploads on "yes". Uses the Assembly MCP tools saved_login / save_login / dwg_to_geomap.
-argument-hint: [project] [path/to/drawing.dwg]
+argument-hint: "[project] [path/to/drawing.dwg]"
 ---
 
 # dwgtogeomap — Revit DWG → Site → Revit Maps

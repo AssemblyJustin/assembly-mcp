@@ -28,10 +28,8 @@ After that, omit `uploader_email` in every call. The tools use the saved person.
 - *Drawing name* — optional; defaults to the file name without `.dwg`. Uploading the same name
   again **replaces** that drawing (say so if they're re-uploading).
 
-Target: **dev** (dev.assembly.nz) for now — always pass `env="dev"` (and `save_login(..., env="dev")`
-for a dev account). Revit Maps (the `project_map_layers` table and the conversion API) is only on dev
-until it's promoted; a prod upload fails until then. Once it's on prod, prod becomes the default and
-dev is used only if they say dev/test.
+Default target is **prod** (app.assembly.nz). Use `env="dev"` only if they say dev/test (then
+`save_login(..., env="dev")` for a dev account).
 
 ## 2. Dry run
 

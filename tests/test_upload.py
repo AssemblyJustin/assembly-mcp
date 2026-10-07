@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from assembly_mcp.server import issue_draft, upload_issue, upload_renders
+from assembly_mcp.server import dwg_to_geomap, issue_draft, upload_issue, upload_renders
 
 needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
 
@@ -62,6 +62,60 @@ def test_partial_failure_is_returned_not_raised(tmp_path: Path, monkeypatch: pyt
     body = f"console.log('RESULT ' + JSON.stringify({json.dumps(result)}));\nprocess.exit(1);\n"
     monkeypatch.setenv("ASSEMBLY_APP_DIR", str(_stub_cli(tmp_path, "upload-renders.ts", body)))
     assert upload_renders("1", [str(tmp_path)], uploader_email="a@x.nz") == result
+
+
+
+@needs_node
+def test_dwg_to_geomap_passes_inputs_as_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(_stub_cli(tmp_path, "upload-dwg-geomap.ts", ECHO)))
+    f = tmp_path / "LotGeoMap.dwg"
+    f.write_bytes(b"x")
+    out = dwg_to_geomap("Homestead Bay", str(f), name="Lots", env="dev", dry_run=True, uploader_email="a@x.nz")
+    assert out["argv"] == [
+        "--as", "a@x.nz", "--project", "Homestead Bay", "--file", str(f.resolve()),
+        "--name", "Lots", "--env", "dev", "--dry-run",
+    ]
+    out = dwg_to_geomap("2610", str(f), uploader_email="a@x.nz")
+    assert out["argv"] == ["--as", "a@x.nz", "--project", "2610", "--file", str(f.resolve()), "--env", "prod"]
+
+
+@needs_node
+def test_dwg_to_geomap_returns_the_cli_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    result = {
+        "ok": True, "uploader": "a@x.nz", "dryRun": True,
+        "project": {"id": "p1", "number": "2610", "name": "Homestead Bay"},
+        "drawing": {"name": "LotGeoMap", "fileName": "LotGeoMap.dwg", "epsg": 2128, "crsName": "Mount Nicholas 2000",
+                    "units": "m", "layers": [{"name": "Proposed Lots", "lines": 258}], "lineCount": 258,
+                    "distanceToSiteKm": 0.15},
+        "replaced": False, "warnings": [],
+    }
+    body = f"console.log('converting');\nconsole.log('RESULT ' + JSON.stringify({json.dumps(result)}));\n"
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(_stub_cli(tmp_path, "upload-dwg-geomap.ts", body)))
+    assert dwg_to_geomap("2610", str(tmp_path / "LotGeoMap.dwg"), dry_run=True, uploader_email="a@x.nz") == result
+
+
+@needs_node
+@pytest.mark.parametrize(
+    "error",
+    [
+        'Couldn\'t work out where this drawing sits — export it from Revit with "Coordinate system basis: Shared"',
+        "The DWG could not be read. Re-export it from Revit",
+        "The DWG has no lines in model space.",
+        '"arrowtown" matches 2 projects — be more specific',
+    ],
+)
+def test_dwg_to_geomap_raises_the_cli_error_plainly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: str) -> None:
+    body = f"console.log('RESULT ' + JSON.stringify({json.dumps({'ok': False, 'error': error, 'code': 'x'})}));\nprocess.exit(1);\n"
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(_stub_cli(tmp_path, "upload-dwg-geomap.ts", body)))
+    with pytest.raises(RuntimeError) as e:
+        dwg_to_geomap("2610", str(tmp_path / "a.dwg"), uploader_email="a@x.nz")
+    assert str(e.value) == error
+
+
+def test_dwg_to_geomap_without_a_saved_login_says_to_save_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(_stub_cli(tmp_path, "upload-dwg-geomap.ts", ECHO)))
+    with pytest.raises(RuntimeError, match="save_login"):
+        dwg_to_geomap("2610", str(tmp_path / "a.dwg"))
 
 
 def test_missing_cli_names_assembly_app_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -6,6 +6,8 @@ Exposes these tools over stdio:
   * upload_issue / issue_draft — files → a draft issue on a project's Documents tab, then issue it
     (wraps the assembly-app upload-issues CLI)
   * upload_renders — images → a project's Renders tab (wraps the assembly-app upload-renders CLI)
+  * dwg_to_geomap — a Revit DWG → lines on a project's Site → Revit Maps tab (wraps the assembly-app
+    upload-dwg-geomap CLI; the DWG is converted by civil-map-service)
 
 Run with:  assembly-mcp        (installed script)
       or:   python -m assembly_mcp.server
@@ -414,6 +416,48 @@ def upload_renders(
     if dry_run:
         args.append("--dry-run")
     return _run_upload_cli("upload-renders.ts", args, _uploader_env(who))
+
+
+@mcp.tool()
+def dwg_to_geomap(
+    project: str,
+    file: str,
+    name: str | None = None,
+    env: str = "prod",
+    dry_run: bool = False,
+    uploader_email: str | None = None,
+) -> dict:
+    """Put a Revit DWG's linework on an assembly-app project's Site → Revit Maps tab, as the person
+    uploading.
+
+    The DWG is converted server-side (civil-map-service): its coordinate system (NZTM or the NZGD2000
+    meridional circuit nearest the project's site) and units are detected automatically. Each
+    drawing is stored by name; uploading the same name again REPLACES that drawing. Run with
+    `dry_run=True` first: it converts the DWG and reports what would be stored, writing nothing.
+
+    Args:
+        project: The project's number (e.g. "2610"), UUID, or name (case-insensitive; an ambiguous
+            name fails and lists the matching projects).
+        file: Path to the .dwg (export from Revit with "Coordinate system basis: Shared").
+        name: The drawing's name on the Revit Maps tab (default: the file name without .dwg).
+        env: "prod" (app.assembly.nz, default) or "dev" (dev.assembly.nz).
+        dry_run: Convert and show the result only; no writes.
+        uploader_email: Who is uploading — omit to use the saved default (see `saved_login`).
+
+    Returns:
+        {ok, uploader, dryRun, project: {id, number, name}, drawing: {name, fileName, epsg, crsName,
+        units, layers: [{name, lines}], lineCount, distanceToSiteKm}, replaced, warnings} —
+        `replaced` (on a dry run: would replace) is true when a drawing with that name already
+        existed; warn the person when `distanceToSiteKm` > 2 (the drawing is probably misplaced).
+    """
+    who = _resolve_uploader(uploader_email)
+    args = ["--as", who, "--project", project, "--file", str(Path(file).expanduser().resolve())]
+    if name:
+        args += ["--name", name]
+    args += _env_arg(env)
+    if dry_run:
+        args.append("--dry-run")
+    return _run_upload_cli("upload-dwg-geomap.ts", args, _uploader_env(who))
 
 
 def main() -> None:

@@ -10,6 +10,7 @@ tools:
 | **`convert_mdtopdf`** | Markdown → PDF | [WeasyPrint](https://weasyprint.org) |
 | **`upload_issue` / `issue_draft`** | files → draft issue → issued | assembly-app `upload-issues` CLI |
 | **`upload_renders`** | images → Renders tab | assembly-app `upload-renders` CLI |
+| **`dwg_to_geomap`** | Revit DWG → lines on Site → Revit Maps | assembly-app `upload-dwg-geomap` CLI (DWG converted by civil-map-service) |
 
 `convert_pdftomd` is a thin wrapper — it shells out to
 `node --experimental-strip-types --no-warnings <assembly-app>/apps/frontend/scripts/pdf2md.ts`,
@@ -76,6 +77,7 @@ Claude Code from inside the repo (or copy `.claude/commands/*` into your project
 /convert-mdtopdf  notes.md     notes.pdf
 /upload issues
 /upload renders
+/dwgtogeomap
 ```
 
 ## Add to Claude Desktop
@@ -137,19 +139,21 @@ Convert Markdown to a PDF file. Provide **either** `md_path` **or**
 Renders Markdown → HTML → PDF with a clean A4 print stylesheet (tables, code
 blocks, page numbers) and verifies the PDF magic bytes before writing.
 
-### `upload_issue` / `issue_draft` / `upload_renders`
+### `upload_issue` / `issue_draft` / `upload_renders` / `dwg_to_geomap`
 
 Upload to an assembly-app project **as the person doing it**. These are thin wrappers over the
-assembly-app CLIs `apps/frontend/scripts/upload-issues.ts` and `upload-renders.ts` (node ≥ 22 +
+assembly-app CLIs `apps/frontend/scripts/upload-issues.ts`, `upload-renders.ts` and `upload-dwg-geomap.ts` (node ≥ 22 +
 an assembly-app checkout, `ASSEMBLY_APP_DIR`). Each signs in as `uploader_email`, so the database's own
 permission rules apply: people can only upload to projects they're on, and viewers and clients can't upload.
-The slash command `/upload issues` / `/upload renders` (`.claude/commands/upload.md`) drives them.
+The slash command `/upload issues` / `/upload renders` (`.claude/commands/upload.md`) drives them;
+`/dwgtogeomap` (`.claude/commands/dwgtogeomap.md`) drives `dwg_to_geomap`.
 
 | Tool | Does |
 |------|------|
 | `upload_issue(project, issue_type, issue_name, files, env="prod", dry_run=False, uploader_email=None)` | Files → a **draft** issue (Transmittal) on the project's Documents tab. Returns `collectionId` + `recipientChoices`. Never issues. |
 | `issue_draft(collection_id, issue_type, recipients=[], cover_notes=None, env="prod", uploader_email=None)` | Issues that draft (allocates the issue number, which can't be undone). `recipients` = people and/or organisation names. |
 | `upload_renders(project, files, title=None, env="prod", dry_run=False, uploader_email=None)` | Images → the project's Renders tab. Skips non-images and images already there. |
+| `dwg_to_geomap(project, file, name=None, env="prod", dry_run=False, uploader_email=None)` | A Revit DWG → stored lines on the project's **Site → Revit Maps** tab. The DWG is converted by civil-map-service (`POST /api/dwg/geojson`, coordinate system + units auto-detected near the project's site). One drawing per `name` (default: file stem); the same name again replaces it. `project` may also be a project name. The dry run converts and reports coordinate system, units, layers, line count and distance to site without writing. Civil-map URL: `https://civilmap.assembly.co.nz` (prod) / `https://civilmap-dev.assembly.co.nz` (dev), override `ASSEMBLY_CIVILMAP_URL`. |
 | `save_login(email, password, env="prod", make_default=True)` | Checks the login by signing in, then saves it to `~/.assembly/credentials.json` and (by default) makes them the default uploader. `/upload` calls it the first time only. |
 | `saved_login()` | Who `/upload` acts as on this machine (`default` + saved `people`). Never returns passwords. |
 
@@ -182,7 +186,7 @@ src/assembly_mcp/
   server.py       FastMCP server — registers the tools (stdio); convert_pdftomd
                   shells out to the assembly-app pdf2md CLI (_app_dir())
   md_to_pdf.py    python-markdown → WeasyPrint rendering
-.claude/commands/ /convert-pdftomd, /convert-mdtopdf and /upload slash commands
+.claude/commands/ /convert-pdftomd, /convert-mdtopdf, /upload and /dwgtogeomap slash commands
 tests/            smoke tests
 ```
 

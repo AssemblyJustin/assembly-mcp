@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from assembly_mcp.server import dwg_to_geomap, issue_draft, upload_issue, upload_renders
+from assembly_mcp.server import dwg_to_geomap, issue_draft, product_catalogue, upload_issue, upload_product, upload_renders
 
 needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
 
@@ -199,3 +199,58 @@ def test_saved_login_never_returns_passwords(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(server, "_check_sign_in", lambda e, p, env: None)
     save_login("jo@x.nz", "secret-pw")
     assert "secret-pw" not in json.dumps(saved_login())
+
+
+# Echoes argv plus the --spec JSON it was handed (the spec file is a temp file the tool deletes).
+ECHO_SPEC = (
+    "const fs = require('node:fs');\n"
+    "const a = process.argv.slice(2);\n"
+    "const i = a.indexOf('--spec');\n"
+    "const spec = i >= 0 ? JSON.parse(fs.readFileSync(a[i + 1], 'utf8')) : null;\n"
+    "console.log('RESULT ' + JSON.stringify({ ok: true, argv: a, spec }));\n"
+)
+
+
+@needs_node
+def test_upload_product_writes_the_spec_and_passes_selection_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(_stub_cli(tmp_path, "upload-product.ts", ECHO_SPEC)))
+    img = tmp_path / "cover.jpg"
+    img.write_bytes(b"x")
+    out = upload_product(
+        "INTELLO PLUS", manufacturer="pro clima", website="https://proclima.co.nz/intello-plus", price=12.5,
+        suppliers=["pro clima NZ"], category="Membranes", product_type="membrane", attributes={"width": 1.5},
+        images=[str(img), "https://cdn.x.nz/a.png"], project="2610", space="Roof", quantity=3, status="approved",
+        env="dev", dry_run=True, uploader_email="a@x.nz",
+    )
+    argv = out["argv"]
+    assert argv[:2] == ["--as", "a@x.nz"] and argv[2] == "--spec"
+    assert argv[4:] == ["--project", "2610", "--space", "Roof", "--quantity", "3", "--status", "approved", "--env", "dev", "--dry-run"]
+    assert out["spec"] == {
+        "model": "INTELLO PLUS", "manufacturer": "pro clima", "model_code": None,
+        "website": "https://proclima.co.nz/intello-plus", "price": 12.5, "price_note": None, "notes": None,
+        "suppliers": ["pro clima NZ"], "category": "Membranes", "type": "membrane", "attributes": {"width": 1.5},
+        "images": [str(img.resolve()), "https://cdn.x.nz/a.png"],
+    }
+    assert not Path(argv[3]).exists(), "the temp spec file is cleaned up"
+
+
+@needs_node
+def test_upload_product_minimal_and_existing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(_stub_cli(tmp_path, "upload-product.ts", ECHO_SPEC)))
+    out = upload_product("Basin", project="Homestead Bay", existing_product_id="p1", organisation="Assembly", uploader_email="a@x.nz")
+    assert out["argv"][4:] == ["--project", "Homestead Bay", "--existing", "p1", "--org", "Assembly", "--env", "prod"]
+    assert out["spec"]["images"] == [] and out["spec"]["suppliers"] == []
+
+
+@needs_node
+def test_upload_product_raises_the_cli_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    body = "console.log('RESULT ' + JSON.stringify({ ok: false, error: 'unknown category \"x\" — choose one of: Basins' }));\nprocess.exit(1);\n"
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(_stub_cli(tmp_path, "upload-product.ts", body)))
+    with pytest.raises(RuntimeError, match="unknown category"):
+        upload_product("Thing", category="x", uploader_email="a@x.nz")
+
+
+@needs_node
+def test_product_catalogue_asks_the_cli_for_the_catalogue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(_stub_cli(tmp_path, "upload-product.ts", ECHO)))
+    assert product_catalogue(env="dev", uploader_email="a@x.nz")["argv"] == ["--as", "a@x.nz", "--catalogue", "--env", "dev"]

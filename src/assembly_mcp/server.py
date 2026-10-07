@@ -8,6 +8,8 @@ Exposes these tools over stdio:
   * upload_renders — images → a project's Renders tab (wraps the assembly-app upload-renders CLI)
   * dwg_to_geomap — a Revit DWG → lines on a project's Site → Revit Maps tab (wraps the assembly-app
     upload-dwg-geomap CLI; the DWG is converted by civil-map-service)
+  * product_catalogue / upload_product — a product → the person's org product library (unless it's
+    a duplicate), optionally selected on a project (wraps the assembly-app upload-product CLI)
 
 Run with:  assembly-mcp        (installed script)
       or:   python -m assembly_mcp.server
@@ -458,6 +460,124 @@ def dwg_to_geomap(
     if dry_run:
         args.append("--dry-run")
     return _run_upload_cli("upload-dwg-geomap.ts", args, _uploader_env(who))
+
+
+@mcp.tool()
+def product_catalogue(env: str = "prod", uploader_email: str | None = None) -> dict:
+    """The product types (with their spec attributes) and leaf categories a product can be filed
+    under — call before `upload_product` to pick `category` / `type` / `attributes`.
+
+    Args:
+        env: "prod" (app.assembly.nz, default) or "dev".
+        uploader_email: Who is asking — omit to use the saved default (see `saved_login`).
+
+    Returns:
+        {types: [{slug, name, attributes: [{key, label, type, unit, options}]}],
+        categories: [{name, uniclass, path}]}
+    """
+    who = _resolve_uploader(uploader_email)
+    return _run_upload_cli("upload-product.ts", ["--as", who, "--catalogue", *_env_arg(env)], _uploader_env(who))
+
+
+@mcp.tool()
+def upload_product(
+    model: str,
+    manufacturer: str | None = None,
+    model_code: str | None = None,
+    website: str | None = None,
+    price: float | None = None,
+    price_note: str | None = None,
+    notes: str | None = None,
+    suppliers: list[str] | None = None,
+    category: str | None = None,
+    product_type: str | None = None,
+    attributes: dict | None = None,
+    images: list[str] | None = None,
+    project: str | None = None,
+    space: str | None = None,
+    quantity: int | None = None,
+    location: str | None = None,
+    status: str | None = None,
+    selection_notes: str | None = None,
+    existing_product_id: str | None = None,
+    organisation: str | None = None,
+    env: str = "prod",
+    dry_run: bool = False,
+    uploader_email: str | None = None,
+) -> dict:
+    """Add a product to the person's organisation product library — unless it's already there — and
+    optionally add it to a project as a selection. Signs in as the person (org admin/editor to add a
+    product; project admin/editor to add a selection).
+
+    Duplicates (same website, same brand + model code, or same brand + name) are never created; with
+    `project` the existing product is selected instead. `similar` products are only reported — if the
+    person says one IS this product, re-run with `existing_product_id`. Always `dry_run=True` first.
+
+    Args:
+        model: The product's name (e.g. "INTELLO PLUS").
+        manufacturer: The brand.
+        model_code: SKU / model code.
+        website: The product page URL.
+        price: Price in NZD (number only).
+        price_note: "rrp" or "on_request".
+        notes: A short description.
+        suppliers: Supplier names.
+        category: A leaf category name or uniclass code (see `product_catalogue`).
+        product_type: A product type slug or name (see `product_catalogue`).
+        attributes: Spec values keyed by the type's attribute keys.
+        images: Image file paths and/or http(s) image URLs; the first is the cover.
+        project: Also select it on this project — number (e.g. "2610"), name, or UUID.
+        space: The project space (room) to put the selection in; created if new.
+        quantity: Selection quantity (default 1).
+        location: Where it goes (free text).
+        status: Selection status: proposed (default), approved, rejected, option.
+        selection_notes: Notes on the selection.
+        existing_product_id: Use this library product instead of creating one.
+        organisation: Whose library, when the person is in several organisations.
+        env: "prod" (app.assembly.nz, default) or "dev".
+        dry_run: Check everything and report what would happen; no writes.
+        uploader_email: Who is uploading — omit to use the saved default (see `saved_login`).
+
+    Returns:
+        {ok, dryRun, created | wouldCreate, productId, organisation, product, duplicateOf: {id, model,
+        reason} | null, similar: [{id, model, manufacturer, website, reason}], images, imageFailures,
+        selection: {project, space: {name, created}, alreadySelected, quantity, status} | null, warnings}
+    """
+    who = _resolve_uploader(uploader_email)
+    spec = {
+        "model": model,
+        "manufacturer": manufacturer,
+        "model_code": model_code,
+        "website": website,
+        "price": price,
+        "price_note": price_note,
+        "notes": notes,
+        "suppliers": suppliers or [],
+        "category": category,
+        "type": product_type,
+        "attributes": attributes,
+        "images": [i if i.lower().startswith(("http://", "https://")) else str(Path(i).expanduser().resolve()) for i in images or []],
+    }
+    with tempfile.TemporaryDirectory(prefix="upload-product-") as tmp:
+        spec_path = Path(tmp) / "product.json"
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+        args = ["--as", who, "--spec", str(spec_path)]
+        for flag, value in (
+            ("--project", project),
+            ("--space", space),
+            ("--quantity", None if quantity is None else str(quantity)),
+            ("--location", location),
+            ("--status", status),
+            ("--selection-notes", selection_notes),
+            ("--existing", existing_product_id),
+            ("--org", organisation),
+        ):
+            if value:
+                args += [flag, value]
+        args += _env_arg(env)
+        if dry_run:
+            args.append("--dry-run")
+        return _run_upload_cli("upload-product.ts", args, _uploader_env(who))
 
 
 def main() -> None:

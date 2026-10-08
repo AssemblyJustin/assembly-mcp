@@ -9,7 +9,16 @@ from pathlib import Path
 
 import pytest
 
-from assembly_mcp.server import dwg_to_geomap, issue_draft, product_catalogue, upload_issue, upload_product, upload_renders
+from assembly_mcp.server import (
+    dwg_to_geomap,
+    find_products,
+    issue_draft,
+    product_catalogue,
+    upload_issue,
+    upload_product,
+    upload_products,
+    upload_renders,
+)
 
 needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node not available")
 
@@ -229,7 +238,7 @@ def test_upload_product_writes_the_spec_and_passes_selection_flags(tmp_path: Pat
         "model": "INTELLO PLUS", "manufacturer": "pro clima", "model_code": None,
         "website": "https://proclima.co.nz/intello-plus", "price": 12.5, "price_note": None, "notes": None,
         "suppliers": ["pro clima NZ"], "category": "Membranes", "type": "membrane", "attributes": {"width": 1.5},
-        "images": [str(img.resolve()), "https://cdn.x.nz/a.png"],
+        "images": [str(img.resolve()), "https://cdn.x.nz/a.png"], "variants": [], "spec_sheets": [],
     }
     assert not Path(argv[3]).exists(), "the temp spec file is cleaned up"
 
@@ -254,3 +263,56 @@ def test_upload_product_raises_the_cli_error(tmp_path: Path, monkeypatch: pytest
 def test_product_catalogue_asks_the_cli_for_the_catalogue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ASSEMBLY_APP_DIR", str(_stub_cli(tmp_path, "upload-product.ts", ECHO)))
     assert product_catalogue(env="dev", uploader_email="a@x.nz")["argv"] == ["--as", "a@x.nz", "--catalogue", "--env", "dev"]
+
+
+@needs_node
+def test_upload_product_variants_spec_sheets_and_update(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(_stub_cli(tmp_path, "upload-product.ts", ECHO_SPEC)))
+    sheet = tmp_path / "sheet.pdf"
+    sheet.write_bytes(b"%PDF")
+    vimg = tmp_path / "black.png"
+    vimg.write_bytes(b"x")
+    out = upload_product(
+        "HSBC", manufacturer="Stiebel Eltron",
+        variants=[{"size": "200 S", "model_code": "236917"}, {"color": "Black", "images": [str(vimg), "https://x.nz/b.png"]}],
+        spec_sheets=[str(sheet), "https://x.nz/s.pdf"], update="overwrite", uploader_email="a@x.nz",
+    )
+    assert out["argv"][4:] == ["--update", "overwrite", "--env", "prod"]
+    assert out["spec"]["spec_sheets"] == [str(sheet.resolve()), "https://x.nz/s.pdf"]
+    assert out["spec"]["variants"] == [
+        {"size": "200 S", "model_code": "236917"},
+        {"color": "Black", "images": [str(vimg.resolve()), "https://x.nz/b.png"]},
+    ]
+
+
+@needs_node
+def test_upload_products_sends_every_product_in_one_spec(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(_stub_cli(tmp_path, "upload-product.ts", ECHO_SPEC)))
+    img = tmp_path / "a.jpg"
+    img.write_bytes(b"x")
+    out = upload_products(
+        [
+            {"model": "A", "images": [str(img)], "selection": {"project": "2610", "space": "Kitchen"}},
+            {"model": "B", "spec_sheets": ["https://x.nz/b.pdf"], "existing_id": "p9", "update": "none"},
+        ],
+        organisation="Assembly", env="dev", dry_run=True, uploader_email="a@x.nz",
+    )
+    assert out["argv"][4:] == ["--org", "Assembly", "--env", "dev", "--dry-run"]
+    assert out["spec"] == {
+        "products": [
+            {"model": "A", "images": [str(img.resolve())], "selection": {"project": "2610", "space": "Kitchen"}},
+            {"model": "B", "spec_sheets": ["https://x.nz/b.pdf"], "existing_id": "p9", "update": "none"},
+        ]
+    }
+
+
+def test_upload_products_needs_products(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="at least one product"):
+        upload_products([], uploader_email="a@x.nz")
+
+
+@needs_node
+def test_find_products_asks_the_cli_to_search(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASSEMBLY_APP_DIR", str(_stub_cli(tmp_path, "upload-product.ts", ECHO)))
+    out = find_products("stiebel hsbc", organisation="Assembly", uploader_email="a@x.nz")
+    assert out["argv"] == ["--as", "a@x.nz", "--find", "stiebel hsbc", "--org", "Assembly", "--env", "prod"]

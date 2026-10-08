@@ -8,8 +8,10 @@ Exposes these tools over stdio:
   * upload_renders — images → a project's Renders tab (wraps the assembly-app upload-renders CLI)
   * dwg_to_geomap — a Revit DWG → lines on a project's Site → Revit Maps tab (wraps the assembly-app
     upload-dwg-geomap CLI; the DWG is converted by civil-map-service)
-  * product_catalogue / upload_product — a product → the person's org product library (unless it's
-    a duplicate), optionally selected on a project (wraps the assembly-app upload-product CLI)
+  * product_catalogue / find_products / upload_product / upload_products — products (with variants,
+    photos and spec-sheet PDFs) → the person's org product library, adding to a product that's already
+    there instead of duplicating it, optionally selected on a project (wraps the assembly-app
+    upload-product CLI)
 
 Run with:  assembly-mcp        (installed script)
       or:   python -m assembly_mcp.server
@@ -462,10 +464,36 @@ def dwg_to_geomap(
     return _run_upload_cli("upload-dwg-geomap.ts", args, _uploader_env(who))
 
 
+def _abs_source(s: str) -> str:
+    """A local file → its absolute path; an http(s) URL as given (the CLI downloads it)."""
+    return s if s.lower().startswith(("http://", "https://")) else str(Path(s).expanduser().resolve())
+
+
+def _resolve_product_files(spec: dict) -> dict:
+    """Make every local file in one product spec absolute — photos, spec sheets and variant photos —
+    since the CLI runs from the assembly-app checkout, not the caller's folder."""
+    out = dict(spec)
+    for key in ("images", "spec_sheets"):
+        if out.get(key):
+            out[key] = [_abs_source(s) for s in out[key]]
+    if out.get("variants"):
+        out["variants"] = [
+            {**v, "images": [_abs_source(s) for s in v["images"]]} if v.get("images") else dict(v) for v in out["variants"]
+        ]
+    return out
+
+
+def _run_with_spec(spec: dict | list | None, who: str, args: list[str]) -> dict:
+    with tempfile.TemporaryDirectory(prefix="upload-product-") as tmp:
+        spec_path = Path(tmp) / "products.json"
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+        return _run_upload_cli("upload-product.ts", ["--as", who, "--spec", str(spec_path), *args], _uploader_env(who))
+
+
 @mcp.tool()
 def product_catalogue(env: str = "prod", uploader_email: str | None = None) -> dict:
     """The product types (with their spec attributes) and leaf categories a product can be filed
-    under — call before `upload_product` to pick `category` / `type` / `attributes`.
+    under — call before `upload_product` / `upload_products` to pick `category` / `type` / `attributes`.
 
     Args:
         env: "prod" (app.assembly.nz, default) or "dev".
@@ -477,6 +505,34 @@ def product_catalogue(env: str = "prod", uploader_email: str | None = None) -> d
     """
     who = _resolve_uploader(uploader_email)
     return _run_upload_cli("upload-product.ts", ["--as", who, "--catalogue", *_env_arg(env)], _uploader_env(who))
+
+
+@mcp.tool()
+def find_products(
+    query: str,
+    organisation: str | None = None,
+    env: str = "prod",
+    uploader_email: str | None = None,
+) -> dict:
+    """Search the person's organisation product library — before adding, to see what's already there
+    (and get a product's id for `existing_id`), or to answer "do we have X?".
+
+    Args:
+        query: Words to find in the product's name, brand, model code or website (all must match;
+            "" lists the library, up to 50).
+        organisation: Whose library, when the person is in several organisations.
+        env: "prod" (app.assembly.nz, default) or "dev".
+        uploader_email: Who is asking — omit to use the saved default (see `saved_login`).
+
+    Returns:
+        {organisation, matches: [{id, model, manufacturer, model_code, website, photos (count),
+        variants: [{label, model_code}], specSheets: [file names]}], truncated}
+    """
+    who = _resolve_uploader(uploader_email)
+    args = ["--as", who, "--find", query]
+    if organisation:
+        args += ["--org", organisation]
+    return _run_upload_cli("upload-product.ts", [*args, *_env_arg(env)], _uploader_env(who))
 
 
 @mcp.tool()
@@ -493,6 +549,8 @@ def upload_product(
     product_type: str | None = None,
     attributes: dict | None = None,
     images: list[str] | None = None,
+    variants: list[dict] | None = None,
+    spec_sheets: list[str] | None = None,
     project: str | None = None,
     space: str | None = None,
     quantity: int | None = None,
@@ -500,23 +558,26 @@ def upload_product(
     status: str | None = None,
     selection_notes: str | None = None,
     existing_product_id: str | None = None,
+    update: str | None = None,
     organisation: str | None = None,
     env: str = "prod",
     dry_run: bool = False,
     uploader_email: str | None = None,
 ) -> dict:
-    """Add a product to the person's organisation product library — unless it's already there — and
-    optionally add it to a project as a selection. Signs in as the person (org admin/editor to add a
-    product; project admin/editor to add a selection).
+    """Add ONE product to the person's organisation product library — with its size / colour variants,
+    photos and spec-sheet PDFs — and optionally select it on a project. Signs in as the person (org
+    admin/editor for the library; project admin/editor for a selection). For several products use
+    `upload_products`.
 
-    Duplicates (same website, same brand + model code, or same brand + name) are never created; with
-    `project` the existing product is selected instead. `similar` products are only reported — if the
-    person says one IS this product, re-run with `existing_product_id`. Always `dry_run=True` first.
+    A product already in the library (same website, same brand + model code, or same brand + name) is
+    never created again: what's missing is added to it instead (see `update`), and with `project` it
+    is what gets selected. `similar` products are only reported — if the person says one IS this
+    product, re-run with `existing_product_id`. Always `dry_run=True` first.
 
     Args:
         model: The product's name (e.g. "INTELLO PLUS").
         manufacturer: The brand.
-        model_code: SKU / model code.
+        model_code: SKU / model code (of the product itself; per-size codes go on the variants).
         website: The product page URL.
         price: Price in NZD (number only).
         price_note: "rrp" or "on_request".
@@ -525,26 +586,30 @@ def upload_product(
         category: A leaf category name or uniclass code (see `product_catalogue`).
         product_type: A product type slug or name (see `product_catalogue`).
         attributes: Spec values keyed by the type's attribute keys.
-        images: Image file paths and/or http(s) image URLs; the first is the cover.
+        images: Photo file paths and/or http(s) image URLs; the first is the cover.
+        variants: Sizes / colours of this product: [{"size": "200 S"} or {"color": "Matte Black"} (one or
+            both), "model_code", "price", "price_note", "source_url", "images": [...]}].
+        spec_sheets: Spec-sheet / datasheet / manual PDFs — file paths and/or http(s) URLs.
         project: Also select it on this project — number (e.g. "2610"), name, or UUID.
         space: The project space (room) to put the selection in; created if new.
         quantity: Selection quantity (default 1).
         location: Where it goes (free text).
         status: Selection status: proposed (default), approved, rejected, option.
         selection_notes: Notes on the selection.
-        existing_product_id: Use this library product instead of creating one.
+        existing_product_id: Use this library product instead of matching or creating one.
+        update: For a product already in the library: "fill" (default — blank fields get a value;
+            missing variants / photos / spec sheets are added), "overwrite" (also replaces the fields
+            given), "none" (no field changes; missing variants / photos / spec sheets still added).
         organisation: Whose library, when the person is in several organisations.
         env: "prod" (app.assembly.nz, default) or "dev".
         dry_run: Check everything and report what would happen; no writes.
         uploader_email: Who is uploading — omit to use the saved default (see `saved_login`).
 
     Returns:
-        {ok, dryRun, created | wouldCreate, productId, organisation, product, duplicateOf: {id, model,
-        reason} | null, similar: [{id, model, manufacturer, website, reason}], images, imageFailures,
-        selection: {project, space: {name, created}, alreadySelected, quantity, status} | null, warnings}
+        {ok, dryRun, organisation, totals, products: [ONE report]} — see `upload_products`.
     """
     who = _resolve_uploader(uploader_email)
-    spec = {
+    spec = _resolve_product_files({
         "model": model,
         "manufacturer": manufacturer,
         "model_code": model_code,
@@ -556,28 +621,75 @@ def upload_product(
         "category": category,
         "type": product_type,
         "attributes": attributes,
-        "images": [i if i.lower().startswith(("http://", "https://")) else str(Path(i).expanduser().resolve()) for i in images or []],
-    }
-    with tempfile.TemporaryDirectory(prefix="upload-product-") as tmp:
-        spec_path = Path(tmp) / "product.json"
-        spec_path.write_text(json.dumps(spec), encoding="utf-8")
-        args = ["--as", who, "--spec", str(spec_path)]
-        for flag, value in (
-            ("--project", project),
-            ("--space", space),
-            ("--quantity", None if quantity is None else str(quantity)),
-            ("--location", location),
-            ("--status", status),
-            ("--selection-notes", selection_notes),
-            ("--existing", existing_product_id),
-            ("--org", organisation),
-        ):
-            if value:
-                args += [flag, value]
-        args += _env_arg(env)
-        if dry_run:
-            args.append("--dry-run")
-        return _run_upload_cli("upload-product.ts", args, _uploader_env(who))
+        "images": images or [],
+        "variants": variants or [],
+        "spec_sheets": spec_sheets or [],
+    })
+    args: list[str] = []
+    for flag, value in (
+        ("--project", project),
+        ("--space", space),
+        ("--quantity", None if quantity is None else str(quantity)),
+        ("--location", location),
+        ("--status", status),
+        ("--selection-notes", selection_notes),
+        ("--existing", existing_product_id),
+        ("--update", update),
+        ("--org", organisation),
+    ):
+        if value:
+            args += [flag, value]
+    args += _env_arg(env)
+    if dry_run:
+        args.append("--dry-run")
+    return _run_with_spec(spec, who, args)
+
+
+@mcp.tool()
+def upload_products(
+    products: list[dict],
+    organisation: str | None = None,
+    env: str = "prod",
+    dry_run: bool = False,
+    uploader_email: str | None = None,
+) -> dict:
+    """Add MANY products in one go (a schedule, a supplier list, a folder of spec sheets) — one sign-in,
+    one plan, one report. Each product follows the same rules as `upload_product`; a failure on one is
+    reported on it and the rest still go ahead. Always `dry_run=True` first.
+
+    Args:
+        products: One dict per product: {"model" (required), "manufacturer", "model_code", "website",
+            "price", "price_note", "notes", "suppliers": [...], "category", "type", "attributes": {...},
+            "images": [...], "variants": [{"size" | "color", "model_code", "price", "price_note",
+            "source_url", "images": [...]}], "spec_sheets": [...], "selection": {"project", "space",
+            "quantity", "location", "status", "notes"}, "existing_id", "update": "fill"|"overwrite"|"none"}.
+            Local file paths are made absolute here. Don't list the same product twice — merge its
+            variants into one entry (a repeat only adds its selection).
+        organisation: Whose library, when the person is in several organisations.
+        env: "prod" (app.assembly.nz, default) or "dev".
+        dry_run: Check everything and report what would happen; no writes.
+        uploader_email: Who is uploading — omit to use the saved default (see `saved_login`).
+
+    Returns:
+        {ok, dryRun, organisation, totals: {products, create, addToExisting, alreadyThere, errors,
+        selections}, products: [{index, action ("create" | "add to existing" | "already there" | "same
+        as an earlier product" | "error"), error, product, productId, duplicateOf: {id, model, reason},
+        sameAs, similar: [{id, model, manufacturer, website, reason}], update, changes: {field: value},
+        photos: {add, alreadyThere}, specSheets: {add, alreadyThere}, variants: [{label, action (add |
+        update), model_code, price, changes, photos}], selection: {project: {number, name}, action (add |
+        update | already selected), changes, quantity, status, space: {name, created, alreadyIn}},
+        failures: [{file, error}], warnings, done (after a real run)}]}
+    """
+    if not products:
+        raise ValueError("upload_products needs at least one product")
+    who = _resolve_uploader(uploader_email)
+    args: list[str] = []
+    if organisation:
+        args += ["--org", organisation]
+    args += _env_arg(env)
+    if dry_run:
+        args.append("--dry-run")
+    return _run_with_spec({"products": [_resolve_product_files(p) for p in products]}, who, args)
 
 
 def main() -> None:
